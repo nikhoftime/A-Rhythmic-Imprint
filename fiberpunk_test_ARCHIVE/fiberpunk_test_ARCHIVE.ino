@@ -4,17 +4,24 @@
 // -------- PIN SETUP --------
 const int piezoPins[] = {A0, A1, A2, A3};
 const int numPiezos = 4;
-const int threshold = 5;
 
 const int speakerPin = 8;
 
+// -------- SENSITIVITY SETTINGS --------
+const int deltaThreshold = 3;     // VERY sensitive
+const unsigned long debounceTime = 8; // short but stable
+
 // -------- RECORDING SETUP --------
-const unsigned long recordDuration = 10000; // 10 seconds
+const unsigned long recordDuration = 10000;
 unsigned long startTime;
-unsigned long lastImpactTime = 0;
 
 int impactCount = 0;
 bool isRecording = false;
+
+// Per-piezo tracking
+int lastSensorValue[4] = {0,0,0,0};
+int smoothedValue[4]   = {0,0,0,0};
+unsigned long lastImpactTime[4] = {0,0,0,0};
 
 // -------- PLAYBACK SETUP --------
 unsigned long noteInterval = 500;
@@ -31,19 +38,11 @@ int totalSessions = 0;
 int currentSessionIndex = -1;
 
 // -------- SCALES --------
-int scalePentatonic[] = {
-  NOTE_C4, NOTE_D4, NOTE_E4, NOTE_G4, NOTE_A4
-};
-
-int scaleMinor[] = {
-  NOTE_C4, NOTE_D4, NOTE_DS4, NOTE_F4,
-  NOTE_G4, NOTE_GS4, NOTE_AS4
-};
-
-int scaleWholeTone[] = {
-  NOTE_C4, NOTE_D4, NOTE_E4, NOTE_FS4,
-  NOTE_GS4, NOTE_AS4
-};
+int scalePentatonic[] = { NOTE_C4, NOTE_D4, NOTE_E4, NOTE_G4, NOTE_A4 };
+int scaleMinor[] = { NOTE_C4, NOTE_D4, NOTE_DS4, NOTE_F4,
+                     NOTE_G4, NOTE_GS4, NOTE_AS4 };
+int scaleWholeTone[] = { NOTE_C4, NOTE_D4, NOTE_E4,
+                         NOTE_FS4, NOTE_GS4, NOTE_AS4 };
 
 int* currentScale;
 int scaleSize = 0;
@@ -52,16 +51,24 @@ int lastNoteIndex = 0;
 // -----------------------------------
 
 void setup() {
+
   Serial.begin(9600);
   delay(1000);
 
   randomSeed(analogRead(A5));
 
   Serial.println("Rain Archive Ready.");
-  Serial.println("Commands:");
+  Serial.println("Ultra-sensitive mode (stable).");
   Serial.println("r = record");
   Serial.println("n = next session");
-  Serial.println("a1, a2, a3... = choose session");
+  Serial.println("a1, a2... = choose session");
+
+  // Initialize baseline values
+  for (int i = 0; i < numPiezos; i++) {
+    int initial = analogRead(piezoPins[i]);
+    lastSensorValue[i] = initial;
+    smoothedValue[i] = initial;
+  }
 }
 
 // -----------------------------------
@@ -110,9 +117,6 @@ void handleSerialInput() {
           Serial.println("Invalid session number.");
         }
       }
-      else {
-        Serial.println("Usage: a1, a2...");
-      }
     }
   }
 }
@@ -125,14 +129,21 @@ void startRecording() {
 
   Serial.println("\n--- Recording New Session ---");
 
-  noTone(speakerPin); // stop playback
+  noTone(speakerPin);
   isRecording = true;
   impactCount = 0;
   startTime = millis();
+
+  for (int i = 0; i < numPiezos; i++) {
+    int val = analogRead(piezoPins[i]);
+    lastSensorValue[i] = val;
+    smoothedValue[i] = val;
+    lastImpactTime[i] = 0;
+  }
 }
 
 // -----------------------------------
-// RECORD RAIN + HIT DETECTION PRINT
+// ULTRA-SENSITIVE BUT STABLE DETECTION
 // -----------------------------------
 
 void recordRain() {
@@ -146,25 +157,34 @@ void recordRain() {
 
   for (int i = 0; i < numPiezos; i++) {
 
-    int sensorValue = analogRead(piezoPins[i]);
+    int raw = analogRead(piezoPins[i]);
 
-    if (sensorValue > threshold && currentTime - lastImpactTime > 50) {
+    // Light smoothing to reduce jitter
+    smoothedValue[i] = (smoothedValue[i] * 3 + raw) / 4;
+
+    int delta = raw - smoothedValue[i];
+
+    // Detect sharp positive spike
+    if (delta > deltaThreshold &&
+        currentTime - lastImpactTime[i] > debounceTime) {
 
       impactCount++;
-      lastImpactTime = currentTime;
+      lastImpactTime[i] = currentTime;
 
-      Serial.print("Hit detected on P");
+      Serial.print("Impact P");
       Serial.print(i);
-      Serial.print(" | Value: ");
-      Serial.print(sensorValue);
-      Serial.print(" | Total hits: ");
+      Serial.print(" | Strength: ");
+      Serial.print(delta);
+      Serial.print(" | Total: ");
       Serial.println(impactCount);
     }
+
+    lastSensorValue[i] = raw;
   }
 }
 
 // -----------------------------------
-// FINISH RECORDING + STORE SESSION
+// FINISH RECORDING
 // -----------------------------------
 
 void finishRecording() {
@@ -173,28 +193,21 @@ void finishRecording() {
 
   float durationSeconds = recordDuration / 1000.0;
   float rawBPM = (impactCount / durationSeconds) * 60.0;
-  float scaledBPM = rawBPM * 0.20;
-  scaledBPM = constrain(scaledBPM, 40, 200);
+  float scaledBPM = constrain(rawBPM * 0.5, 60, 280);
 
   if (totalSessions < maxSessions) {
 
     sessionImpact[totalSessions] = impactCount;
     sessionBPM[totalSessions] = scaledBPM;
 
-    if (scaledBPM < 40) {
-      sessionScale[totalSessions] = 0;
-    }
-    else if (scaledBPM < 100) {
-      sessionScale[totalSessions] = 1;
-    }
-    else {
-      sessionScale[totalSessions] = 2;
-    }
+    if (scaledBPM < 40) sessionScale[totalSessions] = 0;
+    else if (scaledBPM < 100) sessionScale[totalSessions] = 1;
+    else sessionScale[totalSessions] = 2;
 
     totalSessions++;
   }
   else {
-    Serial.println("Archive full (max 5 sessions).");
+    Serial.println("Archive full.");
   }
 
   Serial.println("\n--- Session Stored ---");
@@ -206,7 +219,7 @@ void finishRecording() {
 }
 
 // -----------------------------------
-// LOAD NEXT SESSION
+// LOAD NEXT
 // -----------------------------------
 
 void loadNextSession() {
@@ -217,9 +230,8 @@ void loadNextSession() {
   }
 
   currentSessionIndex++;
-  if (currentSessionIndex >= totalSessions) {
+  if (currentSessionIndex >= totalSessions)
     currentSessionIndex = 0;
-  }
 
   loadSession(currentSessionIndex);
 }
@@ -249,12 +261,12 @@ void loadSession(int index) {
   }
 
   Serial.println("\n--- Playing Session ---");
-  Serial.print("Session: ");
+  Serial.print("Session ");
   Serial.print(index + 1);
   Serial.print(" / ");
   Serial.println(totalSessions);
 
-  Serial.print("Impact Count: ");
+  Serial.print("Impacts: ");
   Serial.println(sessionImpact[index]);
 
   Serial.print("BPM: ");
@@ -277,9 +289,9 @@ void playGeneratedMusic() {
     int newIndex = constrain(lastNoteIndex + step, 0, scaleSize - 1);
     lastNoteIndex = newIndex;
 
-    int note = currentScale[newIndex];
-
-    tone(speakerPin, note, noteInterval * 0.6);
+    tone(speakerPin,
+         currentScale[newIndex],
+         noteInterval * 0.6);
 
     lastNoteTime = now;
   }
