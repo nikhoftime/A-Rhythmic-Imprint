@@ -1,8 +1,7 @@
 # A-Rhythmic-Imprint
 
-**DATA AS MATERIAL**
-A rain-sensing umbrella that records 10-second rainfall sessions and stores them as generative musical memories.
-Rainfall data determining the musical scale the umbrella produces
+An umbrella that records rainfall impact and treats data as material, translating environmental intensity into generative sound and rhythmic memory.
+
 
 ## Features
 - Session-based rainfall recording
