@@ -13,5 +13,4 @@ An umbrella that records rainfall impact and treats data as material, translatin
 - r = record new session
 - n = next session
 - a1, a2, a3... = choose session
-- p = toggle plot mode
 
